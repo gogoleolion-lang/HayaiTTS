@@ -30,6 +30,7 @@ class HayaiApiServer(private val runtime: SherpaTtsRuntime) {
     private val synthLock = Any()
     @Volatile private var server: ServerSocket? = null
     @Volatile private var cancel = false
+    @Volatile private var lastError = ""
 
     val running: Boolean get() = server?.isClosed == false
 
@@ -102,7 +103,7 @@ class HayaiApiServer(private val runtime: SherpaTtsRuntime) {
             method == "GET" && path == "/health" -> {
                 val v = resolveVoice(DEFAULT_SPEAKER)
                 val rate = v?.let { runCatching { runtime.sampleRateOf(it.first, languageHint = "en-US") }.getOrNull() }
-                respond(out, 200, JSONObject().put("ok", v != null).put("voice", v?.first ?: "").put("sampleRate", rate ?: 0).toString())
+                respond(out, 200, JSONObject().put("ok", v != null).put("voice", v?.first ?: "").put("sampleRate", rate ?: 0).put("lastError", lastError).toString())
             }
             method == "GET" && path == "/emotions" ->
                 respond(out, 200, JSONObject().put("emotions", org.json.JSONArray(EmotionPresets.names.toList())).toString())
@@ -128,31 +129,52 @@ class HayaiApiServer(private val runtime: SherpaTtsRuntime) {
 
         synchronized(synthLock) {
             cancel = false
-            out.write(
-                ("HTTP/1.1 200 OK\r\nContent-Type: audio/L16;rate=$rate;channels=1\r\nX-Sample-Rate: $rate\r\n" +
-                    "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n").toByteArray()
-            )
-            out.flush()
+            var headersSent = false
             var broken = false
-            // The pitch is made by resampling, which also changes tempo. Ask the model for the opposite
-            // tempo so the speed the caller asked for is what they hear.
-            runtime.synthesizeStreaming(
-                voiceId = voiceId,
-                text = shaping.text,
-                sid = sid,
-                speed = (shaping.speed / shaping.pitch).coerceIn(0.4f, 2.0f),
-                pitch = 1.0f,
-                languageHint = "en-US",
-            ) { chunk ->
-                if (cancel || broken || socket.isClosed) return@synthesizeStreaming 0
-                val pcm = toPcm(shapeChunk(chunk, shaping.pitch, shaping.gain))
-                try {
-                    out.write("${Integer.toHexString(pcm.size)}\r\n".toByteArray())
-                    out.write(pcm); out.write("\r\n".toByteArray()); out.flush()
-                    1
-                } catch (_: Throwable) { broken = true; 0 }
+            var bytes = 0L
+            // Headers go out with the first audio chunk, so any failure before that becomes a clean error
+            // response with a readable message instead of a silent, empty stream.
+            fun sendHeaders() {
+                out.write(
+                    ("HTTP/1.1 200 OK\r\nContent-Type: audio/L16;rate=$rate;channels=1\r\nX-Sample-Rate: $rate\r\n" +
+                        "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n").toByteArray()
+                )
+                headersSent = true
             }
-            if (!broken) runCatching { out.write("0\r\n\r\n".toByteArray()); out.flush() }
+            try {
+                // The pitch is made by resampling, which also changes tempo. Ask the model for the opposite
+                // tempo so the speed the caller asked for is what they hear.
+                runtime.synthesizeStreaming(
+                    voiceId = voiceId,
+                    text = shaping.text,
+                    sid = sid,
+                    speed = (shaping.speed / shaping.pitch).coerceIn(0.4f, 2.0f),
+                    pitch = 1.0f,
+                    languageHint = "en-US",
+                ) { chunk ->
+                    if (cancel || broken || socket.isClosed) return@synthesizeStreaming 0
+                    val pcm = toPcm(shapeChunk(chunk, shaping.pitch, shaping.gain))
+                    try {
+                        if (!headersSent) sendHeaders()
+                        out.write("${Integer.toHexString(pcm.size)}\r\n".toByteArray())
+                        out.write(pcm); out.write("\r\n".toByteArray()); out.flush()
+                        bytes += pcm.size
+                        1
+                    } catch (_: Throwable) { broken = true; 0 }
+                }
+            } catch (t: Throwable) {
+                lastError = "${t.javaClass.simpleName}: ${t.message ?: ""} (voice=$voiceId sid=$sid)".take(400)
+                log.e(t) { "speak failed" }
+                if (!headersSent) respond(out, 500, JSONObject().put("error", lastError).toString())
+                return
+            }
+            if (broken) return
+            if (!headersSent) {
+                lastError = "no audio was produced (voice=$voiceId sid=$sid text='${shaping.text.take(40)}')"
+                respond(out, 500, JSONObject().put("error", lastError).toString())
+                return
+            }
+            runCatching { out.write("0\r\n\r\n".toByteArray()); out.flush() }
         }
     }
 

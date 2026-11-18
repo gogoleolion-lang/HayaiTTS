@@ -103,7 +103,7 @@ class HayaiApiServer(private val runtime: SherpaTtsRuntime) {
             method == "GET" && path == "/health" -> {
                 val v = resolveVoice(DEFAULT_SPEAKER)
                 val rate = v?.let { runCatching { runtime.sampleRateOf(it.first, languageHint = "en-US") }.getOrNull() }
-                respond(out, 200, JSONObject().put("ok", v != null).put("voice", v?.first ?: "").put("sampleRate", rate ?: 0).put("lastError", lastError).toString())
+                respond(out, 200, JSONObject().put("ok", v != null).put("voice", v?.first ?: "").put("sampleRate", rate ?: 0).put("lastError", lastError).put("lastExit", lastExit).toString())
             }
             method == "GET" && path == "/emotions" ->
                 respond(out, 200, JSONObject().put("emotions", org.json.JSONArray(EmotionPresets.names.toList())).toString())
@@ -217,6 +217,21 @@ class HayaiApiServer(private val runtime: SherpaTtsRuntime) {
             val c = i.read()
             if (c < 0) return if (sb.isEmpty()) null else sb.toString()
             if (c == '\n'.code) return sb.toString().trimEnd('\r')
+            sb.append(c.toChar())
+            if (sb.length > 8192) return null
+        }
+    }
+
+    companion object {
+        const val PORT = 11435
+        /** Set by the service: how the process ended last time, if it died. */
+        @Volatile var lastExit: String = ""
+        const val DEFAULT_SPEAKER = "zf_xiaoyi"
+        private const val MAX_BODY = 64 * 1024
+        private const val MAX_TEXT = 2000
+    }
+}
+if (c == '\n'.code) return sb.toString().trimEnd('\r')
             sb.append(c.toChar())
             if (sb.length > 8192) return null
         }

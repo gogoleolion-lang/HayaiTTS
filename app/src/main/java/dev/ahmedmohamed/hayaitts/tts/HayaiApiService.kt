@@ -18,6 +18,13 @@ class HayaiApiService : Service() {
 
     private val log = Logger.withTag("HayaiApiService")
     private var server: HayaiApiServer? = null
+    private var lastExit = ""
+
+    override fun onCreate() {
+        super.onCreate()
+        lastExit = lastExitText()
+        HayaiApiServer.lastExit = lastExit
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -49,6 +56,27 @@ class HayaiApiService : Service() {
         return START_STICKY
     }
 
+    /** Why the process died last time (native crash, low-memory kill...). Needs Android 11+. */
+    private fun lastExitText(): String {
+        if (Build.VERSION.SDK_INT < 30) return ""
+        return try {
+            val am = getSystemService(android.app.ActivityManager::class.java)
+            val e = am.getHistoricalProcessExitReasons(packageName, 0, 5).firstOrNull { it.reason != android.app.ApplicationExitInfo.REASON_USER_REQUESTED && it.reason != android.app.ApplicationExitInfo.REASON_EXIT_SELF } ?: return ""
+            val name = when (e.reason) {
+                android.app.ApplicationExitInfo.REASON_CRASH -> "JAVA CRASH"
+                android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "NATIVE CRASH"
+                android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "KILLED: LOW MEMORY"
+                android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "KILLED: TOO MUCH RESOURCE USE"
+                android.app.ApplicationExitInfo.REASON_SIGNALED -> "KILLED BY SIGNAL ${e.status}"
+                android.app.ApplicationExitInfo.REASON_ANR -> "NOT RESPONDING"
+                android.app.ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY DIED"
+                else -> "reason ${e.reason}"
+            }
+            val ago = (System.currentTimeMillis() - e.timestamp) / 60000
+            "Last exit: $name ($ago min ago) ${e.description ?: ""}".trim().take(300)
+        } catch (_: Throwable) { "" }
+    }
+
     private fun startInForeground() {
         val nm = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) {
@@ -62,6 +90,7 @@ class HayaiApiService : Service() {
         val n = b.setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("HayaiTTS local API")
             .setContentText("Serving speech on 127.0.0.1:${HayaiApiServer.PORT}")
+            .setStyle(Notification.BigTextStyle().bigText("Serving speech on 127.0.0.1:${HayaiApiServer.PORT}\n" + lastExit))
             .setOngoing(true)
             .addAction(
                 Notification.Action.Builder(

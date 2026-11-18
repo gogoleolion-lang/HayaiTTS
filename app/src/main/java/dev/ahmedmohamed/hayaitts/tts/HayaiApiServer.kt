@@ -231,6 +231,22 @@ class HayaiApiServer(private val runtime: SherpaTtsRuntime) {
         private const val MAX_TEXT = 2000
     }
 }
+sb.toString()
+            if (c == '\n'.code) return sb.toString().trimEnd('\r')
+            sb.append(c.toChar())
+            if (sb.length > 8192) return null
+        }
+    }
+
+    companion object {
+        const val PORT = 11435
+        /** Set by the service: how the process ended last time, if it died. */
+        @Volatile var lastExit: String = ""
+        const val DEFAULT_SPEAKER = "zf_xiaoyi"
+        private const val MAX_BODY = 64 * 1024
+        private const val MAX_TEXT = 2000
+    }
+}
 if (c == '\n'.code) return sb.toString().trimEnd('\r')
             sb.append(c.toChar())
             if (sb.length > 8192) return null

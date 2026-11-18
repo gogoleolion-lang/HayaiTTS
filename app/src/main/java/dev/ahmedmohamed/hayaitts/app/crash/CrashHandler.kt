@@ -28,6 +28,9 @@ object CrashHandler {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             val report = buildReport(thread, throwable)
+            // Android blocks opening the crash screen from the background, so also leave the report as a
+            // normal notification (and a file) that can be read afterwards.
+            postCrashNotification(application, report)
             try {
                 val intent = Intent(application, CrashActivity::class.java).apply {
                     addFlags(
@@ -49,6 +52,31 @@ object CrashHandler {
             if (previous != null) previous.uncaughtException(thread, throwable)
             exitProcess(2)
         }
+    }
+
+    private fun postCrashNotification(app: Application, report: String) {
+        try {
+            java.io.File(app.filesDir, "last_crash.txt").writeText(report)
+        } catch (_: Throwable) {}
+        try {
+            val nm = app.getSystemService(android.app.NotificationManager::class.java)
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(
+                    android.app.NotificationChannel("hayai_crash", "Crash reports", android.app.NotificationManager.IMPORTANCE_HIGH),
+                )
+            }
+            val text = report.lineSequence().filter { it.isNotBlank() }.take(14).joinToString("\n").take(1800)
+            val b = if (android.os.Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(app, "hayai_crash")
+            else android.app.Notification.Builder(app)
+            nm.notify(
+                4799,
+                b.setSmallIcon(android.R.drawable.stat_notify_error)
+                    .setContentTitle("HayaiTTS crashed - tap to read")
+                    .setContentText(text.lineSequence().firstOrNull { it.contains("Exception") || it.contains("Error") } ?: "crash")
+                    .setStyle(android.app.Notification.BigTextStyle().bigText(text))
+                    .build(),
+            )
+        } catch (_: Throwable) {}
     }
 
     private fun buildReport(thread: Thread, throwable: Throwable): String {
